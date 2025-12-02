@@ -1,13 +1,17 @@
 import numpy as np
 import pandas as pd
 import torch
-from huggingface_hub import PyTorchModelHubMixin
+from huggingface_hub import PyTorchModelHubMixin, hf_hub_download, snapshot_download
+from safetensors.torch import load_file as safetensors_load
+import os
 import sys
+import json
+from pathlib import Path
 
 from tqdm import trange
 
-sys.path.append("../")
-from model.module import *
+# Use relative import for module
+from .module import *
 
 
 class KronosTokenizer(nn.Module, PyTorchModelHubMixin):
@@ -176,6 +180,69 @@ class KronosTokenizer(nn.Module, PyTorchModelHubMixin):
         z = self.head(z)
         return z
 
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        """
+        Load a pretrained KronosTokenizer from a local directory or HuggingFace Hub.
+        Supports loading from .safetensors files instead of .pt files.
+        
+        Args:
+            pretrained_model_name_or_path: Path to the model directory or HuggingFace model ID
+            **kwargs: Additional arguments passed to the model initialization
+            
+        Returns:
+            KronosTokenizer: Loaded tokenizer instance
+        """
+        # Check if it's a local path or HuggingFace Hub ID
+        if os.path.isdir(pretrained_model_name_or_path):
+            model_path = Path(pretrained_model_name_or_path)
+        else:
+            # Download from HuggingFace Hub
+            model_path = Path(snapshot_download(pretrained_model_name_or_path, **kwargs))
+        
+        # Look for config file
+        config_path = model_path / "config.json"
+        
+        # Try to find safetensors file (check multiple possible names)
+        safetensors_paths = [
+            model_path / "model.safetensors",
+            model_path / "pytorch_model.safetensors",
+            model_path / "tokenizer.safetensors",
+        ]
+        
+        safetensors_path = None
+        for path in safetensors_paths:
+            if path.exists():
+                safetensors_path = path
+                break
+        
+        if safetensors_path and safetensors_path.exists():
+            # Load config first to initialize the model
+            if not config_path.exists():
+                raise FileNotFoundError(f"Config file not found at {config_path}. Cannot initialize model without config.")
+            
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            
+            # Initialize model with config
+            model = cls(**config)
+            
+            # Load weights from safetensors
+            state_dict = safetensors_load(str(safetensors_path))
+            model.load_state_dict(state_dict)
+            
+            return model
+        else:
+            # Fallback to parent class method (PyTorchModelHubMixin) if safetensors not found
+            # This maintains backward compatibility but warns the user
+            import warnings
+            warnings.warn(
+                f"No safetensors file found at {model_path}. Falling back to PyTorch format. "
+                "Consider converting your model to safetensors format for better security and performance.",
+                UserWarning
+            )
+            return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
+
 
 class Kronos(nn.Module, PyTorchModelHubMixin):
     """
@@ -326,6 +393,67 @@ class Kronos(nn.Module, PyTorchModelHubMixin):
         sibling_embed = self.embedding.emb_s1(s1_ids)
         x2 = self.dep_layer(context, sibling_embed, key_padding_mask=padding_mask)
         return self.head.cond_forward(x2)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, **kwargs):
+        """
+        Load a pretrained Kronos model from a local directory or HuggingFace Hub.
+        Supports loading from .safetensors files instead of .pt files.
+        
+        Args:
+            pretrained_model_name_or_path: Path to the model directory or HuggingFace model ID
+            **kwargs: Additional arguments passed to the model initialization
+            
+        Returns:
+            Kronos: Loaded model instance
+        """
+        # Check if it's a local path or HuggingFace Hub ID
+        if os.path.isdir(pretrained_model_name_or_path):
+            model_path = Path(pretrained_model_name_or_path)
+        else:
+            # Download from HuggingFace Hub
+            model_path = Path(snapshot_download(pretrained_model_name_or_path, **kwargs))
+        
+        # Look for config file
+        config_path = model_path / "config.json"
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found at {config_path}. Cannot initialize model without config.")
+        
+        # Load config
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        # Try to find safetensors file (check multiple possible names)
+        safetensors_paths = [
+            model_path / "model.safetensors",
+            model_path / "pytorch_model.safetensors",
+        ]
+        
+        safetensors_path = None
+        for path in safetensors_paths:
+            if path.exists():
+                safetensors_path = path
+                break
+        
+        if safetensors_path and safetensors_path.exists():
+            # Initialize model with config
+            model = cls(**config)
+            
+            # Load weights from safetensors
+            state_dict = safetensors_load(str(safetensors_path))
+            model.load_state_dict(state_dict)
+            
+            return model
+        else:
+            # Fallback to parent class method (PyTorchModelHubMixin) if safetensors not found
+            # This maintains backward compatibility but warns the user
+            import warnings
+            warnings.warn(
+                f"No safetensors file found at {model_path}. Falling back to PyTorch format. "
+                "Consider converting your model to safetensors format for better security and performance.",
+                UserWarning
+            )
+            return super().from_pretrained(pretrained_model_name_or_path, **kwargs)
 
 
 def top_k_top_p_filtering(
